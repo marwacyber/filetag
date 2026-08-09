@@ -16,7 +16,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: 'any'
           channel: 'stable'
       - name: Get dependencies
         run: |
