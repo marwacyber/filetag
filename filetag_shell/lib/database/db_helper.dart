@@ -189,4 +189,70 @@ class DBHelper {
     ''');
     return rows.map((r) => FileItem.fromMap(r)).toList();
   }
+
+  // ---------- FOLDER BROWSING (over the index, real paths unchanged) ----------
+
+  /// Files whose parent directory is exactly [dirPath].
+  Future<List<FileItem>> getFilesInDirectory(String dirPath) async {
+    final db = await database;
+    final normalized = dirPath.endsWith('/') ? dirPath.substring(0, dirPath.length - 1) : dirPath;
+    final rows = await db.query(
+      'files',
+      where: "path LIKE ? AND path NOT LIKE ?",
+      whereArgs: ['$normalized/%', '$normalized/%/%'],
+      orderBy: 'name COLLATE NOCASE',
+    );
+    return rows.map((r) => FileItem.fromMap(r)).toList();
+  }
+
+  /// Immediate subdirectory names that contain at least one indexed file
+  /// directly under [dirPath] (at any depth below it).
+  Future<List<String>> getSubdirectories(String dirPath) async {
+    final db = await database;
+    final normalized = dirPath.endsWith('/') ? dirPath.substring(0, dirPath.length - 1) : dirPath;
+    final rows = await db.query(
+      'files',
+      columns: ['path'],
+      where: 'path LIKE ?',
+      whereArgs: ['$normalized/%'],
+    );
+    final subdirs = <String>{};
+    for (final row in rows) {
+      final path = row['path'] as String;
+      final rest = path.substring(normalized.length + 1);
+      final slashIndex = rest.indexOf('/');
+      if (slashIndex > 0) {
+        subdirs.add(rest.substring(0, slashIndex));
+      }
+    }
+    final list = subdirs.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return list;
+  }
+
+  /// Global filename search across every indexed file, regardless of tags.
+  Future<List<FileItem>> searchFiles(String query) async {
+    if (query.trim().isEmpty) return [];
+    final db = await database;
+    final rows = await db.query(
+      'files',
+      where: 'name LIKE ?',
+      whereArgs: ['%$query%'],
+      orderBy: 'name COLLATE NOCASE',
+      limit: 100,
+    );
+    return rows.map((r) => FileItem.fromMap(r)).toList();
+  }
+
+  /// Search restricted to files already carrying [tagId] -- used for the
+  /// search box inside a tag's virtual folder view.
+  Future<List<FileItem>> searchFilesInTag(int tagId, String query) async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT files.* FROM files
+      INNER JOIN file_tags ON files.id = file_tags.file_id
+      WHERE file_tags.tag_id = ? AND files.name LIKE ?
+      ORDER BY files.name COLLATE NOCASE
+    ''', [tagId, '%$query%']);
+    return rows.map((r) => FileItem.fromMap(r)).toList();
+  }
 }
