@@ -4,10 +4,12 @@ import 'package:open_filex/open_filex.dart';
 import '../database/db_helper.dart';
 import '../models/file_item.dart';
 import '../models/tag.dart';
+import '../utils/file_visuals.dart';
+import 'folder_browser_screen.dart';
 
-/// Shows every file carrying [tag] -- a "virtual folder".
-/// Nothing here ever moves or copies a file; it only reads/writes
-/// tag associations in the local database.
+/// Shows every file carrying [tag] -- a "virtual folder". Nothing here
+/// ever moves or copies a file; it only reads/writes tag associations
+/// in the local database.
 class BrowseScreen extends StatefulWidget {
   final Tag tag;
   const BrowseScreen({super.key, required this.tag});
@@ -18,7 +20,9 @@ class BrowseScreen extends StatefulWidget {
 
 class _BrowseScreenState extends State<BrowseScreen> {
   final _db = DBHelper.instance;
+  final _searchController = TextEditingController();
   List<FileItem> _files = [];
+  bool _searching = false;
 
   @override
   void initState() {
@@ -28,68 +32,30 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   Future<void> _load() async {
     final files = await _db.getFilesForTag(widget.tag.id!);
-    setState(() => _files = files);
+    setState(() {
+      _files = files;
+      _searching = false;
+    });
   }
 
-  Future<void> _addFilesToTag() async {
-    final allFiles = await _db.getAllFiles();
-    final currentIds = _files.map((f) => f.id).toSet();
-    final candidates = allFiles.where((f) => !currentIds.contains(f.id)).toList();
-
-    if (candidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No other indexed files to add. Run a scan first.')),
-      );
+  Future<void> _runSearch(String query) async {
+    if (query.trim().isEmpty) {
+      _load();
       return;
     }
+    final results = await _db.searchFilesInTag(widget.tag.id!, query);
+    setState(() {
+      _files = results;
+      _searching = true;
+    });
+  }
 
-    final selected = <int>{};
-    await showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text('Add files to "${widget.tag.name}"'),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 400,
-            child: ListView.builder(
-              itemCount: candidates.length,
-              itemBuilder: (context, i) {
-                final f = candidates[i];
-                final checked = selected.contains(f.id);
-                return CheckboxListTile(
-                  value: checked,
-                  title: Text(f.name, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(f.path, style: const TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
-                  onChanged: (v) {
-                    setDialogState(() {
-                      if (v == true) {
-                        selected.add(f.id!);
-                      } else {
-                        selected.remove(f.id);
-                      }
-                    });
-                  },
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            TextButton(
-              onPressed: () async {
-                for (final fileId in selected) {
-                  await _db.tagFile(fileId, widget.tag.id!);
-                }
-                Navigator.pop(context);
-                _load();
-              },
-              child: const Text('Add'),
-            ),
-          ],
-        ),
-      ),
+  Future<void> _openFolderBrowser() async {
+    final added = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => FolderBrowserScreen(tag: widget.tag)),
     );
+    if (added == true) _load();
   }
 
   Future<void> _removeFromTag(FileItem file) async {
@@ -105,35 +71,81 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Scaffold(
-      appBar: AppBar(title: Text(widget.tag.name)),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addFilesToTag,
-        tooltip: 'Add files to this category',
-        child: const Icon(Icons.add),
+      appBar: AppBar(
+        title: Text(widget.tag.name),
+        backgroundColor: Color(widget.tag.colorValue).withOpacity(0.15),
       ),
-      body: _files.isEmpty
-          ? const Center(child: Text('No files here yet. Tap + to add some.'))
-          : ListView.builder(
-              itemCount: _files.length,
-              itemBuilder: (context, i) {
-                final f = _files[i];
-                return ListTile(
-                  leading: const Icon(Icons.insert_drive_file_outlined),
-                  title: Text(f.name, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(
-                    '${_formatSize(f.sizeBytes)} - ${DateFormat.yMMMd().format(DateTime.fromMillisecondsSinceEpoch(f.dateModified))}',
-                    style: const TextStyle(fontSize: 11),
-                  ),
-                  onTap: () => OpenFilex.open(f.path), // opens the REAL file in place
-                  trailing: IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    tooltip: 'Remove from this category',
-                    onPressed: () => _removeFromTag(f),
-                  ),
-                );
-              },
+      floatingActionButton: FloatingActionButton(
+        onPressed: _openFolderBrowser,
+        tooltip: 'Add files to this category',
+        backgroundColor: Color(widget.tag.colorValue),
+        child: const Icon(Icons.add, color: Colors.white),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: TextField(
+              controller: _searchController,
+              onChanged: _runSearch,
+              decoration: InputDecoration(
+                hintText: 'Search in "${widget.tag.name}"...',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                fillColor: scheme.surfaceVariant.withOpacity(0.5),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+              ),
             ),
+          ),
+          Expanded(
+            child: _files.isEmpty
+                ? Center(
+                    child: Text(
+                      _searching ? 'No matches' : 'No files here yet. Tap + to add some.',
+                      style: TextStyle(color: scheme.outline),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    itemCount: _files.length,
+                    itemBuilder: (context, i) {
+                      final f = _files[i];
+                      return Card(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        elevation: 0,
+                        color: scheme.surfaceVariant.withOpacity(0.35),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        child: ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          leading: CircleAvatar(
+                            backgroundColor: FileVisuals.colorFor(f.extension).withOpacity(0.15),
+                            child: Icon(FileVisuals.iconFor(f.extension), color: FileVisuals.colorFor(f.extension)),
+                          ),
+                          title: Text(f.name, overflow: TextOverflow.ellipsis, maxLines: 1),
+                          subtitle: Text(
+                            '${_formatSize(f.sizeBytes)} · ${DateFormat.yMMMd().format(DateTime.fromMillisecondsSinceEpoch(f.dateModified))}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          onTap: () => OpenFilex.open(f.path),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.close_rounded, size: 18),
+                            tooltip: 'Remove from this category',
+                            onPressed: () => _removeFromTag(f),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
